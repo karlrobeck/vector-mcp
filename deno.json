@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --watch main.ts",
+    "dev": "deno run --watch --allow-ffi --allow-env=VECTOR_MCP_CONFIG,DATABASE_URL,DENO_DIR main.ts",
     "load": "deno run -A scripts/load.ts"
   },
   "nodeModulesDir":"auto",

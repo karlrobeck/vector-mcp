@@ -3,82 +3,36 @@ import * as z from "zod";
 import { getEmbedding } from "./src/embedding.ts";
 import {
   closeDatabase,
+  getTopicMetadata,
   initializeDatabase,
+  insertVector,
   listTopics,
   queryVectorsWithContext,
+  setTopicMetadata,
 } from "./src/db.ts";
 import { loadConfig, getTopicsMap } from "./src/config.ts";
-import { loadTopic } from "./src/loader.ts";
-import type { Config } from "./src/config.ts";
+import { loadTopic, loadAllTopics } from "./src/loader.ts";
+import { createLogger } from "./src/logger.ts";
+
+const log = createLogger("main");
 
 export const server = new McpServer({ name: "vector-mcp", version: "1.0.0" });
 
-// Loading state
-let knowledgeLoadingComplete = false;
-let knowledgeWorker: Worker | null = null;
+let backgroundLoadingPromise: Promise<void> | null = null;
 
-/**
- * Spawn a worker thread to load knowledge base in background
- * This keeps the main thread available for MCP requests
- */
-function spawnKnowledgeWorker(config: Config, databasePath: string) {
-  try {
-    // Create worker from TypeScript file
-    const workerUrl = new URL("./src/knowledge-worker.ts", import.meta.url);
-    knowledgeWorker = new Worker(workerUrl.href, { type: "module" });
-
-    // Handle messages from worker
-    knowledgeWorker.onmessage = (event: MessageEvent) => {
-      const message = event.data;
-
-      if (message.type === "log") {
-        server.sendLoggingMessage({
-          level: message.level,
-          data: message.message,
-        });
-      } else if (message.type === "complete") {
-        server.sendLoggingMessage({
-          level: "info",
-          data: `[worker] Knowledge loading complete: ${message.totalCached} cached, ${message.totalLoaded} loaded, ${message.totalFailed} failed`,
-        });
-        knowledgeLoadingComplete = true;
-      } else if (message.type === "error") {
-        server.sendLoggingMessage({
-          level: "error",
-          data: `[worker] Error: ${message.message}`,
-        });
-      }
-    };
-
-    // Handle worker errors
-    knowledgeWorker.onerror = (error: ErrorEvent) => {
-      server.sendLoggingMessage({
-        level: "error",
-        data: `[worker] Worker error: ${error.message}`,
-      });
-    };
-
-    // Send configuration to worker
-    knowledgeWorker.postMessage({
-      type: "load",
-      config,
-      databasePath,
-    });
-
-    server.sendLoggingMessage({
-      level: "info",
-      data: "[startup] Knowledge loading worker spawned",
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    server.sendLoggingMessage({
-      level: "error",
-      data: `[startup] Failed to spawn knowledge worker: ${message}`,
-    });
-  }
+function startBackgroundLoading(config: ReturnType<typeof loadConfig>): void {
+  backgroundLoadingPromise = (async () => {
+    try {
+      log.info("startBackgroundLoading: starting");
+      await loadAllTopics(config);
+      log.info("startBackgroundLoading: complete");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(`startBackgroundLoading: failed | ${message}`);
+    }
+  })();
 }
 
-// Register query_knowledge_base tool
 server.registerTool(
   "query_knowledge_base",
   {
@@ -100,10 +54,9 @@ server.registerTool(
     const { message, topic, limit } = input;
 
     try {
-      // Generate embedding for the query message
-      const queryEmbedding = await getEmbedding(message);
+      log.debug(`query_knowledge_base: "${message}" | topic=${topic ?? "all"} | limit=${limit}`);
 
-      // Query the vector database
+      const queryEmbedding = await getEmbedding(message);
       const results = queryVectorsWithContext(queryEmbedding, topic, limit);
 
       if (results.length === 0) {
@@ -119,7 +72,6 @@ server.registerTool(
         };
       }
 
-      // Format results with context
       const formattedResults = results
         .map((result, index) => {
           const distance = (result.distance as number).toFixed(3);
@@ -161,7 +113,6 @@ server.registerTool(
   },
 );
 
-// Register list_topics tool
 server.registerTool(
   "list_topics",
   {
@@ -171,6 +122,7 @@ server.registerTool(
   },
   () => {
     try {
+      log.debug("list_topics: querying");
       const topics = listTopics();
 
       if (topics.length === 0) {
@@ -210,7 +162,6 @@ server.registerTool(
   },
 );
 
-// Register refresh_knowledge_topic tool
 server.registerTool(
   "refresh_knowledge_topic",
   {
@@ -229,7 +180,8 @@ server.registerTool(
     const { topic, force } = input;
 
     try {
-      // Load config to get topic source URL
+      log.info(`refresh_knowledge_topic: ${topic} | force=${force}`);
+
       const config = loadConfig();
       const topicsMap = getTopicsMap(config);
       const sourceUrl = topicsMap.get(topic);
@@ -246,7 +198,6 @@ server.registerTool(
         };
       }
 
-      // Load the topic
       const result = await loadTopic(topic, sourceUrl, { force });
 
       const statusIcon = result.status === "cached"
@@ -294,64 +245,39 @@ server.registerTool(
   },
 );
 
-// Start server
 async function main() {
   try {
-    // Load configuration
-    const config = loadConfig();
-    server.sendLoggingMessage({
-      level: "info",
-      data: "[startup] Config loaded successfully",
-    });
+    log.info("main: starting");
 
-    // Initialize database (synchronously, so it's ready before server starts)
+    const config = loadConfig();
+    log.info("main: config loaded");
+
     const databasePath = Deno.env.get("DATABASE_URL") ||
       "./data/knowledge.db";
     initializeDatabase(databasePath);
-    server.sendLoggingMessage({
-      level: "info",
-      data: `[startup] Database initialized at ${databasePath}`,
-    });
+    log.info(`main: database initialized | ${databasePath}`);
 
-    // Spawn worker to load knowledge base in background (non-blocking)
-    server.sendLoggingMessage({
-      level: "info",
-      data: "[startup] Starting knowledge loading in background...",
-    });
-    spawnKnowledgeWorker(config, databasePath);
+    log.info("main: starting background loading...");
+    startBackgroundLoading(config);
 
-    // Connect MCP server immediately (don't wait for knowledge loading)
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    server.sendLoggingMessage({
-      level: "info",
-      data: "[startup] MCP server connected via stdio transport",
-    });
+    log.info("main: MCP server connected via stdio transport");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    server.sendLoggingMessage({
-      level: "error",
-      data: `[startup] FATAL: ${message}`,
-    });
+    log.error(`main: FATAL | ${message}`);
     Deno.exit(1);
   }
 }
 
 if (import.meta.main) {
   main().catch((error) => {
-    server.sendLoggingMessage({
-      level: "error",
-      data: `Fatal error: ${error instanceof Error ? error.message : String(error)}`,
-    });
+    log.error(`main: uncaught | ${error instanceof Error ? error.message : String(error)}`);
     Deno.exit(1);
   });
 
-  // Cleanup on exit
   globalThis.addEventListener("beforeunload", () => {
-    // Terminate worker if it's still running
-    if (knowledgeWorker) {
-      knowledgeWorker.terminate();
-    }
+    log.info("main: cleanup");
     closeDatabase();
   });
 }

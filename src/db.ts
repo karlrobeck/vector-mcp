@@ -1,6 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { load } from "sqlite-vec";
 import { SemanticChunk } from "./chunker.ts";
+import { createLogger } from "./logger.ts";
+
+const log = createLogger("db");
 
 let db: DatabaseSync | null = null;
 
@@ -35,10 +38,8 @@ function serializeVector(embedding: number[]): Uint8Array {
 export function initializeDatabase(path: string = ":memory:"): void {
   db = new DatabaseSync(path, { allowExtension: true });
 
-  // Load sqlite-vec extension
   load(db);
 
-  // Create topic_metadata table for tracking topic checksums
   db.exec(`
     CREATE TABLE IF NOT EXISTS topic_metadata (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,12 +54,10 @@ export function initializeDatabase(path: string = ":memory:"): void {
     );
   `);
 
-  // Create index on topic for fast lookups
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_topic_metadata_topic ON topic_metadata(topic);
   `);
 
-  // Create new vectors table with full hierarchy (only if it doesn't exist)
   db.exec(`
     CREATE TABLE IF NOT EXISTS vectors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +90,6 @@ export function initializeDatabase(path: string = ":memory:"): void {
     );
   `);
 
-  // Create indexes (if they don't exist)
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_topic ON vectors(topic);
     CREATE INDEX IF NOT EXISTS idx_level ON vectors(level);
@@ -100,7 +98,7 @@ export function initializeDatabase(path: string = ":memory:"): void {
     CREATE INDEX IF NOT EXISTS idx_code ON vectors(has_code_block);
   `);
 
-  console.error(`Database initialized at ${path}`);
+  log.info(`initializeDatabase: ${path}`);
 }
 
 /**
@@ -152,9 +150,9 @@ export function insertVector(
     vectorBuffer
   );
 
-  // Get the last inserted row ID
   const idStmt = db.prepare(`SELECT last_insert_rowid() as id`);
   const result = idStmt.get() as { id: number };
+  log.debug(`insertVector: ${topic} | id: ${result.id}`);
   return result.id;
 }
 
@@ -178,6 +176,8 @@ export function queryVectors(
   if (!db) {
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
+
+  log.debug(`queryVectors: topic=${topic ?? "all"} | limit=${limit}`);
 
   const queryBuffer = serializeVector(queryEmbedding);
 
@@ -207,6 +207,7 @@ export function queryVectors(
   const stmt = db.prepare(query);
   const results = stmt.all(...params) as any[];
 
+  log.debug(`queryVectors: ${results.length} results`);
   return results.map((row) => ({
     id: row.id,
     content: row.content,
@@ -237,6 +238,7 @@ export function queryVectorsWithContext(
   hasCodeBlock: boolean;
   codeLanguages: string[];
 }> {
+  log.debug(`queryVectorsWithContext: topic=${topic ?? "all"} | limit=${limit}`);
   const results = queryVectors(queryEmbedding, topic, limit * 2);
 
   // Group by breadcrumb to get section context
@@ -278,7 +280,9 @@ export function queryVectorsWithContext(
     flattened.push(...items.slice(0, 2)); // Top 2 from each section
   }
 
-  return flattened.slice(0, limit);
+  const finalResults = flattened.slice(0, limit);
+  log.debug(`queryVectorsWithContext: ${finalResults.length} results (grouped from ${results.length})`);
+  return finalResults;
 }
 
 /**
@@ -291,7 +295,9 @@ export function listTopics(): string[] {
 
   const stmt = db.prepare(`SELECT DISTINCT topic FROM vectors ORDER BY topic ASC`);
   const results = stmt.all() as any[];
-  return results.map((row) => row.topic);
+  const topics = results.map((row) => row.topic);
+  log.debug(`listTopics: ${topics.length} topics`);
+  return topics;
 }
 
 /**
@@ -333,8 +339,12 @@ export function getChunkById(id: number): {
 
   const row = stmt.get(id) as any;
 
-  if (!row) return null;
+  if (!row) {
+    log.debug(`getChunkById: ${id} not found`);
+    return null;
+  }
 
+  log.debug(`getChunkById: ${id} found`);
   return {
     id: row.id,
     content: row.content,
@@ -358,6 +368,8 @@ export function queryByLevel(level: number, topic?: string, limit: number = 10):
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
 
+  log.debug(`queryByLevel: level=${level} | topic=${topic ?? "all"} | limit=${limit}`);
+
   let query = `SELECT * FROM vectors WHERE level = ?`;
   const params: any[] = [level];
 
@@ -380,6 +392,8 @@ export function queryCodeExamples(topic?: string, limit: number = 10): any[] {
   if (!db) {
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
+
+  log.debug(`queryCodeExamples: topic=${topic ?? "all"} | limit=${limit}`);
 
   let query = `SELECT * FROM vectors WHERE has_code_block = 1`;
   const params: any[] = [];
@@ -409,6 +423,8 @@ export function getStats(): {
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
 
+  log.debug("getStats: querying database statistics");
+
   const totalStmt = db.prepare(`SELECT COUNT(*) as count FROM vectors`);
   const totalResult = totalStmt.get() as { count: number };
 
@@ -420,12 +436,15 @@ export function getStats(): {
 
   const topics = listTopics();
 
-  return {
+  const stats = {
     totalChunks: totalResult.count,
     topics: topics,
     avgChunkSize: Math.round(avgResult.avg || 0),
     chunksWithCode: codeResult.count,
   };
+
+  log.debug(`getStats: ${stats.totalChunks} chunks | ${stats.chunksWithCode} with code`);
+  return stats;
 }
 
 /**
@@ -435,6 +454,8 @@ export function getTopicMetadata(topic: string): TopicMetadata | null {
   if (!db) {
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
+
+  log.trace(`getTopicMetadata: ${topic}`);
 
   const stmt = db.prepare(`SELECT * FROM topic_metadata WHERE topic = ?`);
   const result = stmt.get(topic) as TopicMetadata | undefined;
@@ -455,11 +476,12 @@ export function setTopicMetadata(
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
 
+  log.info(`setTopicMetadata: ${topic} | checksum=${checksum?.substring(0, 8) ?? "null"} | chunks=${chunkCount}`);
+
   const now = new Date().toISOString();
   const existingMetadata = getTopicMetadata(topic);
 
   if (existingMetadata) {
-    // Update existing
     const stmt = db.prepare(`
       UPDATE topic_metadata 
       SET source_url = ?, 
@@ -472,7 +494,6 @@ export function setTopicMetadata(
     `);
     stmt.run(sourceUrl, checksum, chunkCount, checksum ? now : null, now, error, topic);
   } else {
-    // Insert new
     const stmt = db.prepare(`
       INSERT INTO topic_metadata (topic, source_url, last_checksum, chunk_count, last_loaded_at, last_attempted_at, last_error)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -494,12 +515,15 @@ export function deleteTopicChunks(topic: string): number {
     throw new Error("Database not initialized. Call initializeDatabase() first.");
   }
 
+  log.debug(`deleteTopicChunks: ${topic}`);
+
   const stmt = db.prepare(`DELETE FROM vectors WHERE topic = ?`);
   stmt.run(topic);
 
-  // Get the number of changes from the last statement
   const changesStmt = db.prepare(`SELECT changes() as changes`);
   const result = changesStmt.get() as { changes: number };
+
+  log.info(`deleteTopicChunks: ${topic} | ${result.changes} deleted`);
   return result.changes;
 }
 
@@ -513,9 +537,12 @@ export function getTopicStatus(topic: string): {
   lastLoadedAt: string | null;
   lastError: string | null;
 } {
+  log.trace(`getTopicStatus: ${topic}`);
+
   const metadata = getTopicMetadata(topic);
 
   if (!metadata) {
+    log.debug(`getTopicStatus: ${topic} not found`);
     return {
       exists: false,
       chunkCount: 0,
@@ -525,6 +552,7 @@ export function getTopicStatus(topic: string): {
     };
   }
 
+  log.debug(`getTopicStatus: ${topic} | ${metadata.chunk_count} chunks`);
   return {
     exists: true,
     chunkCount: metadata.chunk_count,
@@ -541,6 +569,6 @@ export function closeDatabase(): void {
   if (db) {
     db.close();
     db = null;
-    console.error("Database connection closed");
+    log.info("closeDatabase: connection closed");
   }
 }

@@ -1,6 +1,6 @@
 /**
  * Advanced hierarchical semantic chunking strategy.
- * 
+ *
  * Features:
  * - Parses markdown into hierarchical tree structure
  * - Detects and preserves code blocks (never splits them)
@@ -8,6 +8,10 @@
  * - Builds complete breadcrumb paths
  * - Generates semantic chunks with full hierarchy
  */
+
+import { createLogger } from "./logger.ts";
+
+const log = createLogger("chunker");
 
 export interface CodeBlock {
   start: number;              // Character position start
@@ -349,17 +353,21 @@ function chunkTreeNodes(node: TreeNode, maxSize: number = 1000): SemanticChunk[]
  * Main export: Chunk text semantically with full hierarchy
  */
 export function chunkTextSemantic(text: string, maxSize: number = 1000): SemanticChunk[] {
-  // Build tree
+  log.debug(`chunkTextSemantic: ${text.length} chars | maxSize=${maxSize}`);
+
   const root = buildMarkdownTree(text);
+  log.trace(`chunkTextSemantic: ${text.length} chars → tree built`);
 
-  // Chunk tree nodes
   const chunks = chunkTreeNodes(root, maxSize);
+  log.trace(`chunkTextSemantic: ${chunks.length} chunks before filtering`);
 
-  // Filter: minimum requirements
-  return chunks.filter((chunk) => {
+  const filtered = chunks.filter((chunk) => {
     const words = chunk.content.split(/\s+/).length;
     return chunk.content.length >= 50 && words >= 5;
   });
+
+  log.debug(`chunkTextSemantic: ${text.length} chars → ${filtered.length} chunks`);
+  return filtered;
 }
 
 /**

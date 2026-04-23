@@ -11,7 +11,9 @@ let extractor: any = null;
  */
 export async function getEmbedding(text: string): Promise<number[]> {
   if (!extractor) {
-    extractor = await pipeline("feature-extraction", MODEL_NAME);
+    extractor = await pipeline("feature-extraction", MODEL_NAME, {
+      device: "cpu",
+    });
   }
 
   const output = await extractor(text, { 

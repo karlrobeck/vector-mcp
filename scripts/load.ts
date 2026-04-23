@@ -1,6 +1,9 @@
 import { initializeDatabase, closeDatabase, getTopicStatus } from "../src/db.ts";
 import { loadConfig, getTopicsMap } from "../src/config.ts";
 import { loadAllTopics, loadTopic, getTopicStatusMessage } from "../src/loader.ts";
+import { createLogger } from "../src/logger.ts";
+
+const log = createLogger("load");
 
 /**
  * Parse CLI arguments
@@ -90,8 +93,7 @@ function formatNumber(num: number): string {
  */
 function printResults(results: Array<any>): void {
   const sorted = [...results].sort((a, b) => {
-    // Sort by: loaded > cached > failed
-    const order = { loaded: 0, cached: 1, failed: 2 };
+    const order: Record<string, number> = { loaded: 0, cached: 1, failed: 2 };
     return order[a.status] - order[b.status];
   });
 
@@ -162,7 +164,7 @@ async function main() {
     const config = loadConfig();
     const databasePath = Deno.env.get("DATABASE_URL") || "./data/knowledge.db";
 
-    // Initialize database
+    log.info(`load: initializing database | ${databasePath}`);
     initializeDatabase(databasePath);
 
     // Handle status command
@@ -205,11 +207,13 @@ async function main() {
 
       console.log(`\n🔄 Loading topic: ${args.topic}${args.force ? " (force reload)" : ""}${args.dryRun ? " (dry-run)" : ""}\n`);
 
+      log.info(`load: loading topic | ${args.topic} | force=${args.force} | dryRun=${args.dryRun}`);
       const result = await loadTopic(args.topic, sourceUrl, {
         force: args.force,
         dryRun: args.dryRun,
       });
 
+      log.info(`load: ${args.topic} ${result.status}`);
       printResults([result]);
 
       if (result.status === "failed") {
@@ -219,11 +223,13 @@ async function main() {
       // Load all topics
       console.log(`\n🔄 Loading all topics${args.force ? " (force reload)" : ""}${args.dryRun ? " (dry-run)" : ""}\n`);
 
+      log.info(`load: loading all topics | force=${args.force} | dryRun=${args.dryRun}`);
       const results = await loadAllTopics(config, {
         force: args.force,
         dryRun: args.dryRun,
       });
 
+      log.info(`load: ${results.length} topics processed`);
       printResults(results);
 
       const hasFailures = results.some((r) => r.status === "failed");
@@ -233,9 +239,11 @@ async function main() {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    log.error(`load: FATAL | ${message}`);
     console.error(`\n❌ Error: ${message}\n`);
     Deno.exit(1);
   } finally {
+    log.info("load: closing database");
     closeDatabase();
   }
 }

@@ -1,4 +1,7 @@
 import { crypto } from "@std/crypto";
+import { createLogger } from "./logger.ts";
+
+const log = createLogger("source");
 
 /**
  * Content type detection
@@ -95,14 +98,15 @@ export async function fetchSource(
   options?: { timeout?: number },
 ): Promise<FetchResult> {
   const timeout = options?.timeout || 30000;
+  log.info(`fetchSource: ${urlOrPath}`);
 
   let content: string;
 
-  // Handle file:// URLs
   if (urlOrPath.startsWith("file://")) {
     const filePath = urlOrPath.replace("file://", "");
     try {
       content = await Deno.readTextFile(filePath);
+      log.debug(`fetchSource: local file | ${content.length} chars`);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         throw new Error(`Local file not found: ${filePath}`);
@@ -114,7 +118,6 @@ export async function fetchSource(
       );
     }
   } else {
-    // Handle HTTP/HTTPS URLs
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -130,6 +133,7 @@ export async function fetchSource(
       }
 
       content = await response.text();
+      log.debug(`fetchSource: HTTP | ${content.length} chars`);
     } catch (error) {
       clearTimeout(timeoutId);
 
@@ -144,11 +148,10 @@ export async function fetchSource(
     }
   }
 
-  // Calculate checksum
   const checksum = await calculateChecksum(content);
-
-  // Detect content type
   const contentType = detectContentType(urlOrPath, content);
+
+  log.info(`fetchSource: ${urlOrPath} | ${formatBytes(content.length)} | ${contentType}`);
 
   return {
     content,
@@ -156,6 +159,12 @@ export async function fetchSource(
     contentType,
     fetchedAt: new Date(),
   };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 /**
@@ -195,13 +204,20 @@ export function processContent(
   content: string,
   contentType: ContentType,
 ): string {
+  log.debug(`processContent: ${contentType} | ${content.length} chars input`);
+
+  let result: string;
   switch (contentType) {
     case "json":
-      return extractMarkdownFromJSON(content);
+      result = extractMarkdownFromJSON(content);
+      break;
     case "yaml":
     case "markdown":
     case "text":
     default:
-      return content;
+      result = content;
   }
+
+  log.trace(`processContent: ${contentType} | ${content.length} → ${result.length} chars`);
+  return result;
 }

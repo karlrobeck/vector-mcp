@@ -9,6 +9,9 @@ import {
 } from "./db.ts";
 import { fetchSource, processContent } from "./source.ts";
 import { Config, getTopicsMap } from "./config.ts";
+import { createLogger } from "./logger.ts";
+
+const log = createLogger("loader");
 
 /**
  * Result of loading a topic
@@ -49,19 +52,22 @@ export async function loadTopic(
   const force = options?.force ?? false;
   const dryRun = options?.dryRun ?? false;
 
+  log.info(`loadTopic: ${topicName} | force=${force} | dryRun=${dryRun}`);
+
   try {
-    // Step 1: Fetch content
+    log.debug(`loadTopic: ${topicName} | step: fetch`);
     const fetchResult = await fetchSource(sourceUrl);
+    log.debug(`loadTopic: ${topicName} | step: process`);
     const content = processContent(fetchResult.content, fetchResult.contentType);
 
-    // Step 2: Check if we need to load (checksum comparison)
+    log.debug(`loadTopic: ${topicName} | step: checksum`);
     const existingMetadata = getTopicMetadata(topicName);
     const checksumMatches =
       existingMetadata?.last_checksum === fetchResult.checksum && !force;
 
     if (checksumMatches) {
-      // Cache hit
       const duration = performance.now() - startTime;
+      log.info(`loadTopic: ${topicName} | CACHED | ${existingMetadata?.chunk_count} chunks | ${Math.round(duration)}ms`);
       return {
         topic: topicName,
         status: "cached",
@@ -72,26 +78,31 @@ export async function loadTopic(
       };
     }
 
-    // Step 3: Need to load - chunk, embed, and insert
-    const maxSize = 1000; // Default chunk size
-
-    const chunks = chunkTextSemantic(content, maxSize);
+    log.debug(`loadTopic: ${topicName} | step: chunk`);
+    const chunks = chunkTextSemantic(content, 1000);
+    log.debug(`loadTopic: ${topicName} | ${chunks.length} chunks created`);
 
     if (!dryRun) {
-      // Delete existing chunks for this topic
+      log.debug(`loadTopic: ${topicName} | step: delete`);
       deleteTopicChunks(topicName);
 
-      // Embed and insert each chunk
-      for (const chunk of chunks) {
+      log.debug(`loadTopic: ${topicName} | step: embed+insert | ${chunks.length} chunks`);
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
         const embedding = await getEmbedding(chunk.content);
         insertVector(chunk, topicName, embedding);
+
+        if (i === 0 || i === chunks.length - 1 || i % 50 === 0) {
+          log.debug(`loadTopic: ${topicName} | embedded ${i + 1}/${chunks.length} chunks`);
+        }
       }
 
-      // Update metadata
+      log.debug(`loadTopic: ${topicName} | step: metadata`);
       setTopicMetadata(topicName, sourceUrl, fetchResult.checksum, chunks.length);
     }
 
     const duration = performance.now() - startTime;
+    log.info(`loadTopic: ${topicName} | LOADED | ${chunks.length} chunks | ${Math.round(duration)}ms`);
     return {
       topic: topicName,
       status: "loaded",
@@ -104,11 +115,11 @@ export async function loadTopic(
     const duration = performance.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    // Check if topic exists in database
+    log.error(`loadTopic: ${topicName} | FAILED | ${errorMessage}`);
+
     const topicStatus = getTopicStatus(topicName);
 
     if (topicStatus.exists) {
-      // Keep existing chunks, alert client
       setTopicMetadata(topicName, sourceUrl, null, topicStatus.chunkCount, errorMessage);
 
       return {
@@ -121,7 +132,6 @@ export async function loadTopic(
         duration: Math.round(duration),
       };
     } else {
-      // New topic that couldn't be loaded
       return {
         topic: topicName,
         status: "failed",
@@ -147,13 +157,22 @@ export async function loadAllTopics(
   options?: { force?: boolean; dryRun?: boolean }
 ): Promise<TopicLoadResult[]> {
   const topicsMap = getTopicsMap(config);
+  const topics = Array.from(topicsMap.entries());
+
+  log.info(`loadAllTopics: ${topics.length} topics to load`);
+
   const results: TopicLoadResult[] = [];
 
-  // Load all topics sequentially (respecting rate limiting)
-  for (const [topic, sourceUrl] of topicsMap) {
+  for (const [topic, sourceUrl] of topics) {
     const result = await loadTopic(topic, sourceUrl, options);
     results.push(result);
   }
+
+  const loaded = results.filter((r) => r.status === "loaded").length;
+  const cached = results.filter((r) => r.status === "cached").length;
+  const failed = results.filter((r) => r.status === "failed").length;
+
+  log.info(`loadAllTopics: complete | ${loaded} loaded | ${cached} cached | ${failed} failed`);
 
   return results;
 }
