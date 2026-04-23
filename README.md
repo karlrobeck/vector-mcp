@@ -349,3 +349,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## Disclaimer
+
+This project uses AI agents to assist with code generation and is part of the collaborators in the project. The tools and workflows in this repository leverage autonomous agents to automate development tasks including writing code, debugging, and documentation.
+
+For more information about how this project uses AI agents, see [AGENTS.md](./AGENTS.md).
