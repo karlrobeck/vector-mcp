@@ -1,9 +1,5 @@
 # vector-mcp
 
-![Deno](https://img.shields.io/badge/Deno-2.7.12+-000000?style=flat&logo=deno&logoColor=ffffff)
-![License](https://img.shields.io/badge/License-MIT-29B700?style=flat)
-![npm](https://img.shields.io/badge/sqlite--vec-0.1.9-326CE5?style=flat&logo=sqlite&logoColor=326CE5)
-
 A Model Context Protocol (MCP) server for semantic knowledge base querying with vector embeddings.
 
 ## Overview
