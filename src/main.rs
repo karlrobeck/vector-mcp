@@ -1,3 +1,4 @@
+mod embedding;
 mod models;
 mod parser;
 
