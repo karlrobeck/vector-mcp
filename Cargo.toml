@@ -7,4 +7,6 @@ edition = "2024"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 fastembed = "5.13.3"
+markdown = "1.0.0"
+sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls"] }
 tokio = { version = "1.52.1", features = ["full"] }
