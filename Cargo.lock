@@ -3660,6 +3660,8 @@ dependencies = [
  "clap",
  "fastembed",
  "markdown",
+ "serde",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
